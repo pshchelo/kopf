@@ -94,8 +94,15 @@ async def infinite_watch(
     a new one is recreated, and the stream continues.
     It only exits with unrecoverable exceptions.
     """
+    # First, list the resources, and get the list's resource version.
+    # Simulate the events with type "None" event - used in detection of causes.
+    items, resource_version = await fetching.list_objs_rv(resource=resource, namespace=namespace)
+    for item in items:
+        yield {'type': None, 'object': item}
+
     while True:
-        async for event in streaming_watch(resource=resource, namespace=namespace):
+        async for event in streaming_watch(resource=resource, namespace=namespace,
+                                           initial_list_version=resource_version):
             yield event
         await asyncio.sleep(config.WatchersConfig.watcher_retry_delay)
 
@@ -104,22 +111,17 @@ async def streaming_watch(
         *,
         resource: resources.Resource,
         namespace: Optional[str],
+        initial_list_version: Optional[str] = None
 ) -> AsyncIterator[bodies.Event]:
     """
     Stream the watch-events from one single API watch-call.
     """
 
-    # First, list the resources regularly, and get the list's resource version.
-    # Simulate the events with type "None" event - used in detection of causes.
-    items, resource_version = await fetching.list_objs_rv(resource=resource, namespace=namespace)
-    for item in items:
-        yield {'type': None, 'object': item}
-
-    # Then, watch the resources starting from the list's resource version.
+    # Watch the resources starting from the given initial resource version.
     stream = watch_objs(
         resource=resource, namespace=namespace,
         timeout=config.WatchersConfig.default_stream_timeout,
-        since=resource_version,
+        since=initial_list_version,
     )
     async for event in stream:
 
