@@ -177,6 +177,9 @@ async def worker(
             replenished.clear()
             try:
                 await handler(event=event, replenished=replenished)
+            except asyncio.TimeoutError as e:
+                # TODO: handler is a functools.partial. make the prints a bit nicer by removing it.
+                logger.warning(f"{handler} failed with timeout error {e}. Ignoring the event.")
             except Exception as e:
                 # TODO: handler is a functools.partial. make the prints a bit nicer by removing it.
                 logger.exception(f"{handler} failed with an exception. Ignoring the event.")
