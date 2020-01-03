@@ -155,6 +155,7 @@ def detect_resource_changing_cause(
         diff: Optional[diffs.Diff] = None,
         requires_finalizer: bool = True,
         initial: bool = False,
+        prefix: Optional[str] = None,
         **kwargs: Any,
 ) -> ResourceChangingCause:
     """
@@ -199,7 +200,7 @@ def detect_resource_changing_cause(
     # For an object seen for the first time (i.e. just-created), call the creation handlers,
     # then mark the state as if it was seen when the creation has finished.
     # Creation never mixes with resuming, even if an object is detected on startup (first listing).
-    if not lastseen.has_essence_stored(body):
+    if not lastseen.has_essence_stored(body, prefix=prefix):
         kwargs['initial'] = False
         return ResourceChangingCause(reason=Reason.CREATE, **kwargs)
 

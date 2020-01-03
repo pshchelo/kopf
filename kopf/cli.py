@@ -49,6 +49,8 @@ def main() -> None:
 @click.option('--dev', 'priority', type=int, is_flag=True, flag_value=666)
 @click.option('-L', '--liveness', 'liveness_endpoint', type=str)
 @click.option('-P', '--peering', 'peering_name', type=str, default=None, envvar='KOPF_RUN_PEERING')
+@click.option('-A', '--annotate-with-peering', is_flag=True, default=False, envvar='KOPF_RUN_ANNOTATE_WITH_PEERING',
+              help="Use peering name as prefix to add for annotation.")
 @click.option('-p', '--priority', type=int, default=0)
 @click.option('-m', '--module', 'modules', multiple=True)
 @click.argument('paths', nargs=-1)
@@ -58,6 +60,7 @@ def run(
         paths: List[str],
         modules: List[str],
         peering_name: Optional[str],
+        annotate_with_peering: bool,
         priority: int,
         standalone: bool,
         namespace: Optional[str],
@@ -73,6 +76,7 @@ def run(
         namespace=namespace,
         priority=priority,
         peering_name=peering_name,
+        prefix=peering_name if annotate_with_peering else None,
         liveness_endpoint=liveness_endpoint,
         stop_flag=__controls.stop_flag,
         ready_flag=__controls.ready_flag,

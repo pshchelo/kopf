@@ -36,7 +36,6 @@ from kopf.structs import diffs
 from kopf.structs import finalizers
 from kopf.structs import lastseen
 from kopf.structs import patches
-from kopf.structs import primitives
 from kopf.structs import resources
 
 WAITING_KEEPALIVE_INTERVAL = 10 * 60
@@ -152,6 +151,7 @@ async def resource_handler(
         event: bodies.Event,
         replenished: asyncio.Event,
         event_queue: posting.K8sEventQueue,
+        prefix: Optional[str] = None,
 ) -> None:
     """
     Handle a single custom object low-level watch-event.
@@ -197,7 +197,7 @@ async def resource_handler(
     # Detect the cause and handle it (or at least log this happened).
     if registry.has_resource_changing_handlers(resource=resource):
         extra_fields = registry.get_extra_fields(resource=resource)
-        old, new, diff = lastseen.get_essential_diffs(body=body, extra_fields=extra_fields)
+        old, new, diff = lastseen.get_essential_diffs(body=body, prefix=prefix, extra_fields=extra_fields)
         resource_changing_cause = causation.detect_resource_changing_cause(
             event=event,
             resource=resource,
@@ -209,12 +209,14 @@ async def resource_handler(
             memo=memory.user_data,
             initial=memory.noticed_by_listing and not memory.fully_handled_once,
             requires_finalizer=registry.requires_finalizer(resource=resource, body=body),
+            prefix=prefix,
         )
         delay = await handle_resource_changing_cause(
             lifecycle=lifecycle,
             registry=registry,
             memory=memory,
             cause=resource_changing_cause,
+            prefix=prefix,
         )
 
     # Whatever was done, apply the accumulated changes to the object.
@@ -273,6 +275,7 @@ async def handle_resource_changing_cause(
         registry: registries.OperatorRegistry,
         memory: containers.ResourceMemory,
         cause: causation.ResourceChangingCause,
+        prefix: Optional[str] = None,
 ) -> Optional[float]:
     """
     Handle a detected cause, as part of the bigger handler routine.
@@ -316,7 +319,7 @@ async def handle_resource_changing_cause(
     # Regular causes also do some implicit post-handling when all handlers are done.
     if done or skip:
         extra_fields = registry.get_extra_fields(resource=cause.resource)
-        lastseen.refresh_essence(body=body, patch=patch, extra_fields=extra_fields)
+        lastseen.refresh_essence(body=body, patch=patch, prefix=prefix, extra_fields=extra_fields)
         if cause.reason == causation.Reason.DELETE:
             logger.debug("Removing the finalizer, thus allowing the actual deletion.")
             finalizers.remove_finalizers(body=body, patch=patch)

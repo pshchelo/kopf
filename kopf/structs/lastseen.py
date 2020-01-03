@@ -22,12 +22,20 @@ from kopf.structs import dicts
 from kopf.structs import diffs
 from kopf.structs import patches
 
-LAST_SEEN_ANNOTATION = 'kopf.zalando.org/last-handled-configuration'
-""" The annotation name for the last stored state of the resource. """
+BASE_LAST_SEEN_ANNOTATION = 'kopf.zalando.org/last-handled-configuration'
+""" The annotation name base for the last stored state of the resource. """
+
+
+def last_seen_annotation(prefix: Optional[str] = None):
+    return (
+        ".".join((prefix, BASE_LAST_SEEN_ANNOTATION)) if prefix
+        else BASE_LAST_SEEN_ANNOTATION
+    )
 
 
 def get_essence(
         body: bodies.Body,
+        prefix: Optional[str] = None,
         extra_fields: Optional[Iterable[dicts.FieldSpec]] = None,
 ) -> bodies.BodyEssence:
     """
@@ -67,7 +75,7 @@ def get_essence(
     # But we do not want not all of the annotations, only potentially useful.
     annotations = essence.get('metadata', {}).get('annotations', {})
     for annotation in list(annotations):
-        if annotation == LAST_SEEN_ANNOTATION:
+        if annotation == last_seen_annotation(prefix):
             del annotations[annotation]
         if annotation == 'kubectl.kubernetes.io/last-applied-configuration':
             del annotations[annotation]
@@ -88,26 +96,29 @@ def get_essence(
 
 def has_essence_stored(
         body: bodies.Body,
+        prefix: Optional[str] = None,
 ) -> bool:
     annotations = body.get('metadata', {}).get('annotations', {})
-    return LAST_SEEN_ANNOTATION in annotations
+    return last_seen_annotation(prefix) in annotations
 
 
 def get_essential_diffs(
         body: bodies.Body,
+        prefix: Optional[str] = None,
         extra_fields: Optional[Iterable[dicts.FieldSpec]] = None,
 ) -> Tuple[Optional[bodies.BodyEssence], Optional[bodies.BodyEssence], diffs.Diff]:
-    old: Optional[bodies.BodyEssence] = retrieve_essence(body)
-    new: Optional[bodies.BodyEssence] = get_essence(body, extra_fields=extra_fields)
+    old: Optional[bodies.BodyEssence] = retrieve_essence(body, prefix=prefix)
+    new: Optional[bodies.BodyEssence] = get_essence(body, prefix=prefix, extra_fields=extra_fields)
     return old, new, diffs.diff(old, new)
 
 
 def retrieve_essence(
         body: bodies.Body,
+        prefix: Optional[str] = None,
 ) -> Optional[bodies.BodyEssence]:
-    if not has_essence_stored(body):
+    if not has_essence_stored(body, prefix=prefix):
         return None
-    essence_str: str = body['metadata']['annotations'][LAST_SEEN_ANNOTATION]
+    essence_str: str = body['metadata']['annotations'][last_seen_annotation(prefix)]
     essence_obj: bodies.BodyEssence = json.loads(essence_str)
     return essence_obj
 
@@ -117,9 +128,10 @@ def refresh_essence(
         body: bodies.Body,
         patch: patches.Patch,
         extra_fields: Optional[Iterable[dicts.FieldSpec]] = None,
+        prefix: Optional[str] = None,
 ) -> None:
-    old_essence = retrieve_essence(body=body)
-    new_essence = get_essence(body, extra_fields=extra_fields)
+    old_essence = retrieve_essence(body=body, prefix=prefix)
+    new_essence = get_essence(body, prefix=prefix, extra_fields=extra_fields)
     if new_essence != old_essence:
         annotations = patch.setdefault('metadata', {}).setdefault('annotations', {})
-        annotations[LAST_SEEN_ANNOTATION] = json.dumps(new_essence)
+        annotations[last_seen_annotation(prefix)] = json.dumps(new_essence)
