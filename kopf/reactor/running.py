@@ -13,8 +13,8 @@ from kopf.engines import posting
 from kopf.engines import probing
 from kopf.reactor import activities
 from kopf.reactor import causation
-from kopf.reactor import handling
 from kopf.reactor import lifecycles
+from kopf.reactor import processing
 from kopf.reactor import queueing
 from kopf.reactor import registries
 from kopf.structs import containers
@@ -66,14 +66,13 @@ def login(
         ))
     except asyncio.CancelledError:
         pass
-    except handling.ActivityError as e:
+    except activities.ActivityError as e:
         # Detect and re-raise the original LoginErrors, not the general activity error.
         # This is only needed for the legacy one-shot login, not for a background job.
         for outcome in e.outcomes.values():
             if isinstance(outcome.exception, credentials.LoginError):
                 raise outcome.exception
-        else:
-            raise
+        raise
 
 
 def run(
@@ -246,9 +245,9 @@ async def spawn_tasks(
                 coro=queueing.watcher(
                     namespace=namespace,
                     resource=ourselves.resource,
-                    handler=functools.partial(peering.peers_handler,
-                                              ourselves=ourselves,
-                                              freeze_mode=freeze_mode)))),
+                    processor=functools.partial(peering.process_peering_event,
+                                                ourselves=ourselves,
+                                                freeze_mode=freeze_mode)))),
         ])
 
     # Resource event handling, only once for every known resource (de-duplicated).
@@ -260,12 +259,12 @@ async def spawn_tasks(
                     namespace=namespace,
                     resource=resource,
                     freeze_mode=freeze_mode,
-                    handler=functools.partial(handling.resource_handler,
-                                              lifecycle=lifecycle,
-                                              registry=registry,
-                                              memories=memories,
-                                              resource=resource,
-                                              event_queue=event_queue)))),
+                    processor=functools.partial(processing.process_resource_event,
+                                                lifecycle=lifecycle,
+                                                registry=registry,
+                                                memories=memories,
+                                                resource=resource,
+                                                event_queue=event_queue)))),
         ])
 
     # On Ctrl+C or pod termination, cancel all tasks gracefully.
@@ -309,32 +308,34 @@ async def run_tasks(
         Only the tasks that existed before the operator startup are ignored
         (for example, those that spawned the operator itself).
     """
+
+    # Run the infinite tasks until one of them fails/exits (they never exit normally).
+    # If the operator is cancelled, propagate the cancellation to all the sub-tasks.
+    # There is no graceful period: cancel as soon as possible, but allow them to finish.
     try:
-        # Run the infinite tasks until one of them fails/exits (they never exit normally).
         root_done, root_pending = await _wait(root_tasks, return_when=asyncio.FIRST_COMPLETED)
     except asyncio.CancelledError:
-        # If the operator is cancelled, propagate the cancellation to all the sub-tasks.
-        # There is no graceful period: cancel as soon as possible, but allow them to finish.
-        root_cancelled, root_left = await _stop(root_tasks, title="Root", cancelled=True)
+        await _stop(root_tasks, title="Root", cancelled=True)
         hung_tasks = await _all_tasks(ignored=ignored)
-        hung_cancelled, hung_left = await _stop(hung_tasks, title="Hung", cancelled=True)
+        await _stop(hung_tasks, title="Hung", cancelled=True)
         raise
-    else:
-        # If the operator is intact, but one of the root tasks has exited (successfully or not),
-        # cancel all the remaining root tasks, and gracefully exit other spawned sub-tasks.
-        root_cancelled, root_left = await _stop(root_pending, title="Root", cancelled=False)
-        hung_tasks = await _all_tasks(ignored=ignored)
-        try:
-            # After the root tasks are all gone, cancel any spawned sub-tasks (e.g. handlers).
-            # TODO: assumption! the loop is not fully ours! find a way to cancel our spawned tasks.
-            hung_done, hung_pending = await _wait(hung_tasks, timeout=5.0)
-        except asyncio.CancelledError:
-            # If the operator is cancelled, propagate the cancellation to all the sub-tasks.
-            hung_cancelled, hung_left = await _stop(hung_tasks, title="Hung", cancelled=True)
-            raise
-        else:
-            # If the operator is intact, but the timeout is reached, forcely cancel the sub-tasks.
-            hung_cancelled, hung_left = await _stop(hung_pending, title="Hung", cancelled=False)
+
+    # If the operator is intact, but one of the root tasks has exited (successfully or not),
+    # cancel all the remaining root tasks, and gracefully exit other spawned sub-tasks.
+    root_cancelled, _ = await _stop(root_pending, title="Root", cancelled=False)
+
+    # After the root tasks are all gone, cancel any spawned sub-tasks (e.g. handlers).
+    # If the operator is cancelled, propagate the cancellation to all the sub-tasks.
+    # TODO: an assumption! the loop is not fully ours! find a way to cancel only our spawned tasks.
+    hung_tasks = await _all_tasks(ignored=ignored)
+    try:
+        hung_done, hung_pending = await _wait(hung_tasks, timeout=5.0)
+    except asyncio.CancelledError:
+        await _stop(hung_tasks, title="Hung", cancelled=True)
+        raise
+
+    # If the operator is intact, but the timeout is reached, forcely cancel the sub-tasks.
+    hung_cancelled, _ = await _stop(hung_pending, title="Hung", cancelled=False)
 
     # If succeeded or if cancellation is silenced, re-raise from failed tasks (if any).
     await _reraise(root_done | root_cancelled | hung_done | hung_cancelled)
@@ -478,7 +479,7 @@ async def _startup_cleanup_activities(
 
     # Execute the startup activity before any root task starts running (due to readiness flag).
     try:
-        await handling.activity_trigger(
+        await activities.run_activity(
             lifecycle=lifecycles.all_at_once,
             registry=registry,
             activity=causation.Activity.STARTUP,
@@ -508,7 +509,7 @@ async def _startup_cleanup_activities(
 
     # Execute the cleanup activity after all other root tasks are presumably done.
     try:
-        await handling.activity_trigger(
+        await activities.run_activity(
             lifecycle=lifecycles.all_at_once,
             registry=registry,
             activity=causation.Activity.CLEANUP,
